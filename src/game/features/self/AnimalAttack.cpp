@@ -7,7 +7,9 @@ namespace YimMenu::Features
 {
 	namespace
 	{
-		bool IsValidAttackTarget(Entity target, Entity self)
+		// these are raw game handles (ints), not the YimMenu::Entity wrapper -- the
+		// natives read/write plain int handles and the wrapper deletes operator int
+		bool IsValidAttackTarget(int target, int self)
 		{
 			if (!target || target == self)
 				return false;
@@ -21,9 +23,9 @@ namespace YimMenu::Features
 			return true;
 		}
 
-		Entity GetAimedTarget(int playerId, Entity self)
+		int GetAimedTarget(int playerId, int self)
 		{
-			Entity target = 0;
+			int target = 0;
 			if (PLAYER::GET_ENTITY_PLAYER_IS_FREE_AIMING_AT(playerId, &target) && IsValidAttackTarget(target, self))
 				return target;
 
@@ -43,7 +45,7 @@ namespace YimMenu::Features
 	{
 		using LoopedCommand::LoopedCommand;
 
-		static void ConfigureCombatAnimal(Ped handle)
+		static void ConfigureCombatAnimal(int handle)
 		{
 			PED::SET_BLOCKING_OF_NON_TEMPORARY_EVENTS(handle, false);
 			PED::SET_PED_COMBAT_ATTRIBUTES(handle, 46, true);
@@ -63,14 +65,14 @@ namespace YimMenu::Features
 			if (!ped)
 				return;
 
-			const bool isBird = PED::_GET_IS_BIRD(ped.GetHandle());
+			const bool isBird = ENTITY::_GET_IS_BIRD(ped.GetHandle());
 
 			// only touch animal/bird models, leave Arthur/John alone
 			if (!ped.IsAnimal() && !isBird)
 				return;
 
-			const auto handle   = ped.GetHandle();
-			const auto playerId = Self::GetPlayer().GetId();
+			const int handle   = ped.GetHandle();
+			const int playerId = Self::GetPlayer().GetId();
 
 			const auto target = GetAimedTarget(playerId, handle);
 			if (!target)

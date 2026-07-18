@@ -51,7 +51,7 @@ namespace YimMenu::Features
 
 			// animal models, plus birds specifically in case they aren't classed as animals --
 			// flying Arthur looks like a bug, not a feature
-			if (!ped.IsAnimal() && !PED::_GET_IS_BIRD(ped.GetHandle()))
+			if (!ped.IsAnimal() && !ENTITY::_GET_IS_BIRD(ped.GetHandle()))
 				return;
 
 			// clean up if we swapped ped since last tick
