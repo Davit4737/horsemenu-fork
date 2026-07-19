@@ -1,5 +1,6 @@
 #include "Self.hpp"
 
+#include "Self/HorseCustomization.hpp"
 #include "core/commands/BoolCommand.hpp"
 #include "core/commands/Commands.hpp"
 #include "core/commands/IntCommand.hpp"
@@ -150,7 +151,6 @@ namespace YimMenu::Submenus
 		globalsGroup->AddItem(std::make_shared<BoolCommandItem>("drunk"_J));
 		globalsGroup->AddItem(std::make_shared<BoolCommandItem>("superpunch"_J));
 		globalsGroup->AddItem(std::make_shared<BoolCommandItem>("quickskin"_J));
-		globalsGroup->AddItem(std::make_shared<BoolCommandItem>("animalattack"_J));
 
 		toolsGroup->AddItem(std::make_shared<CommandItem>("suicide"_J));
 		toolsGroup->AddItem(std::make_shared<CommandItem>("clearcrimes"_J));
@@ -180,8 +180,6 @@ namespace YimMenu::Submenus
 		movementGroup->AddItem(std::make_shared<ConditionalItem>("noclip"_J, std::make_shared<FloatCommandItem>("noclipspeed"_J)));
 		movementGroup->AddItem(std::make_shared<BoolCommandItem>("freecam"_J));
 		movementGroup->AddItem(std::make_shared<ConditionalItem>("freecam"_J, std::make_shared<FloatCommandItem>("freecamspeed"_J)));
-		movementGroup->AddItem(std::make_shared<BoolCommandItem>("birdflight"_J));
-		movementGroup->AddItem(std::make_shared<ConditionalItem>("birdflight"_J, std::make_shared<FloatCommandItem>("birdflightspeed"_J)));
 
 		main->AddItem(globalsGroup);
 		main->AddItem(toolsGroup);
@@ -223,6 +221,13 @@ namespace YimMenu::Submenus
 				});
 		}));
 		horse->AddItem(horseGlobalsGroup);
+
+		auto horseCustomizationGroup = std::make_shared<Group>("Customization");
+		horseCustomizationGroup->AddItem(std::make_shared<ImGuiItem>([] {
+			RenderHorseCustomizationMenu();
+		}));
+		horse->AddItem(horseCustomizationGroup);
+
 		AddCategory(std::move(horse));
 
 		auto vehicle             = std::make_shared<Category>("Vehicle");

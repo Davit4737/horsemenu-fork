@@ -1,6 +1,5 @@
 #include "AnimalPlayerAbilities.hpp"
 
-#include "game/backend/ScriptMgr.hpp"
 #include "game/backend/Self.hpp"
 #include "game/frontend/GUI.hpp"
 #include "game/rdr/Enums.hpp"
@@ -8,51 +7,74 @@
 
 #include <cmath>
 
+// When you SET_PLAYER_MODEL to an animal (wolf, cougar, bird, ...) the game hands
+// you the animal ped but leaves it unable to fight: the melee task is disabled and
+// birds keep their normal gravity so they can never take off. This handler runs
+// every frame from the feature loop and, whenever your ped is an animal, quietly
+// re-enables the attack move set and - for birds - swaps in velocity based flight.
+// There is deliberately no menu toggle; it just works while you are an animal.
+
 namespace YimMenu::Features
 {
 	namespace
 	{
-		constexpr float kBirdFlySpeed = 0.35f;
+		constexpr float kDegToRad = 0.017453292f;
 
-		bool g_ScriptRunning = false;
+		int g_ConfiguredModel = 0; // the model we last set up, so we only touch flags on change
+		int g_AttackCooldown  = 0; // frames to wait before re-issuing the lunge task
 
-		void DisableAnimalFlee(int pedHandle)
+		bool IsBird(int handle)
+		{
+			return PED::_GET_IS_BIRD(handle);
+		}
+
+		// Kills the wildlife "run away from the player" tuning so the animal stays put
+		// and obeys you instead of constantly fleeing.
+		void DisableAnimalFlee(int handle)
 		{
 			static constexpr int fleeParams[] = {104, 105, 10, 146, 113, 114, 115, 116, 117, 118, 119, 111, 107};
 			for (const auto param : fleeParams)
-				FLOCK::SET_ANIMAL_TUNING_FLOAT_PARAM(pedHandle, param, 0.0f);
+				FLOCK::SET_ANIMAL_TUNING_FLOAT_PARAM(handle, param, 0.0f);
 		}
 
-		void ConfigureCombatAnimal(int pedHandle)
+		// Clears the flags that stop an animal player model from meleeing and makes it
+		// combat capable so the attack tasks actually play out.
+		void MakeCombatReady(int handle)
 		{
-			PED::SET_BLOCKING_OF_NON_TEMPORARY_EVENTS(pedHandle, false);
-			PED::SET_PED_COMBAT_ATTRIBUTES(pedHandle, 46, true);
-			PED::SET_PED_COMBAT_ATTRIBUTES(pedHandle, 5, true);
-			PED::SET_PED_COMBAT_ATTRIBUTES(pedHandle, 1, true);
-			PED::SET_PED_COMBAT_ABILITY(pedHandle, 2);
-			PED::SET_PED_COMBAT_MOVEMENT(pedHandle, 2);
-			PED::SET_PED_COMBAT_RANGE(pedHandle, 2);
-			PED::SET_PED_FLEE_ATTRIBUTES(pedHandle, 0, false);
-			PED::SET_PED_CAN_RAGDOLL(pedHandle, true);
+			PED::SET_PED_CONFIG_FLAG(handle, (int)PedConfigFlag::DisableMelee, false);
+			PED::SET_PED_CONFIG_FLAG(handle, (int)PedConfigFlag::DisableMeleeHitReactions, false);
+			PED::SET_PED_CONFIG_FLAG(handle, (int)PedConfigFlag::DisableMeleeKnockout, false);
+			PED::SET_PED_CONFIG_FLAG(handle, (int)PedConfigFlag::DisableMeleeTargetSwitch, false);
+			PED::SET_PED_CONFIG_FLAG(handle, (int)PedConfigFlag::CanAttackFriendly, true);
+			PED::SET_PED_CONFIG_FLAG(handle, (int)PedConfigFlag::TreatAsPlayerDuringTargeting, true);
+
+			PED::SET_PED_COMBAT_ATTRIBUTES(handle, 46, true); // can fight armed peds while unarmed
+			PED::SET_PED_COMBAT_ATTRIBUTES(handle, 5, true);  // always fight
+			PED::SET_PED_COMBAT_ATTRIBUTES(handle, 1, true);
+			PED::SET_PED_COMBAT_ABILITY(handle, 2);
+			PED::SET_PED_COMBAT_MOVEMENT(handle, 2);
+			PED::SET_PED_COMBAT_RANGE(handle, 2);
+			PED::SET_PED_FLEE_ATTRIBUTES(handle, 0, false);
+			PED::SET_PED_CAN_RAGDOLL(handle, true);
+			FLOCK::_SET_ANIMAL_IS_WILD(handle, false);
 		}
 
-		bool IsValidAttackTarget(int pedHandle, int selfHandle)
+		bool IsValidAttackTarget(int handle, int selfHandle)
 		{
-			if (!pedHandle || pedHandle == selfHandle)
+			if (!handle || handle == selfHandle)
 				return false;
-
-			if (!ENTITY::DOES_ENTITY_EXIST(pedHandle) || !ENTITY::IS_ENTITY_A_PED(pedHandle))
+			if (!ENTITY::DOES_ENTITY_EXIST(handle) || !ENTITY::IS_ENTITY_A_PED(handle))
 				return false;
-
-			if (PED::IS_PED_DEAD_OR_DYING(pedHandle, true))
+			if (PED::IS_PED_DEAD_OR_DYING(handle, true))
 				return false;
-
 			return true;
 		}
 
+		// Prefer whatever you are aiming at / locked onto, so you can pick a fight
+		// deliberately.
 		int GetAimedPedTarget(int playerId, int selfHandle)
 		{
-			Entity target = 0;
+			int target = 0;
 			if (PLAYER::GET_ENTITY_PLAYER_IS_FREE_AIMING_AT(playerId, &target) && IsValidAttackTarget(target, selfHandle))
 				return target;
 
@@ -62,146 +84,141 @@ namespace YimMenu::Features
 			return 0;
 		}
 
-		void TickAnimalAttack(Ped ped)
+		// Fallback so you can just mash attack and lunge at the nearest thing, with no
+		// need to lock on first.
+		int GetNearestAttackTarget(int selfHandle, rage::fvector3 pos)
 		{
-			const int pedHandle  = ped.GetHandle();
-			const int playerId   = Self::GetPlayer().GetId();
-			const int target     = GetAimedPedTarget(playerId, pedHandle);
+			int closest = 0;
+			if (PED::GET_CLOSEST_PED(pos.x, pos.y, pos.z, 14.0f, true, true, &closest, false, false, false, -1)
+			    && IsValidAttackTarget(closest, selfHandle))
+				return closest;
+			return 0;
+		}
 
-			if (!target)
+		void TickAttack(int selfHandle, int playerId, rage::fvector3 pos)
+		{
+			if (g_AttackCooldown > 0)
+			{
+				g_AttackCooldown--;
 				return;
+			}
 
 			const bool wantsAttack = PAD::IS_CONTROL_PRESSED(0, (Hash)NativeInputs::INPUT_ATTACK)
 			    || PAD::IS_CONTROL_PRESSED(0, (Hash)NativeInputs::INPUT_MELEE_ATTACK)
 			    || PAD::IS_CONTROL_PRESSED(0, (Hash)NativeInputs::INPUT_ATTACK2);
-
 			if (!wantsAttack)
 				return;
 
-			if (PED::IS_PED_IN_COMBAT(pedHandle, target))
+			int target = GetAimedPedTarget(playerId, selfHandle);
+			if (!target)
+				target = GetNearestAttackTarget(selfHandle, pos);
+			if (!target)
 				return;
 
-			ped.ForceControl();
-			ConfigureCombatAnimal(pedHandle);
-
-			if (PED::_GET_IS_BIRD(pedHandle))
-			{
-				TASK::TASK_COMBAT_PED(pedHandle, target, 0, 16);
+			if (PED::IS_PED_IN_COMBAT(selfHandle, target))
 				return;
-			}
 
-			TASK::TASK_COMBAT_ANIMAL_CHARGE_PED(pedHandle, target, true, 0, 0, 0, 0);
+			if (IsBird(selfHandle))
+				TASK::TASK_COMBAT_PED(selfHandle, target, 0, 16);
+			else
+				TASK::TASK_COMBAT_ANIMAL_CHARGE_PED(selfHandle, target, true, 0, 0, 0, 0);
+
+			g_AttackCooldown = 24; // let the strike play before re-issuing
 		}
 
 		void TickBirdFlight(Ped ped)
 		{
-			if (!PED::_GET_IS_BIRD(ped.GetHandle()))
-				return;
+			const int handle = ped.GetHandle();
 
-			if (GUI::IsOpen())
-				return;
+			PED::SET_PED_GRAVITY(handle, false);
+			ENTITY::SET_ENTITY_HAS_GRAVITY(handle, false);
+			ped.SetRagdoll(false);
 
-			const int pedHandle = ped.GetHandle();
-			ped.ForceControl();
+			const float moveY = -PAD::GET_CONTROL_NORMAL(0, (Hash)NativeInputs::INPUT_MOVE_UD); // forward positive
+			const float moveX = PAD::GET_CONTROL_NORMAL(0, (Hash)NativeInputs::INPUT_MOVE_LR);
 
-			PED::SET_PED_GRAVITY(pedHandle, false);
-			ENTITY::SET_ENTITY_HAS_GRAVITY(pedHandle, false);
-
-			rage::fvector3 vel{};
-
-			if (PAD::IS_CONTROL_PRESSED(0, (Hash)NativeInputs::INPUT_SPRINT))
-				vel.z += kBirdFlySpeed;
+			float up = 0.0f;
+			if (PAD::IS_CONTROL_PRESSED(0, (Hash)NativeInputs::INPUT_JUMP))
+				up += 1.0f;
 			if (PAD::IS_CONTROL_PRESSED(0, (Hash)NativeInputs::INPUT_DUCK))
-				vel.z -= kBirdFlySpeed;
-			if (PAD::IS_CONTROL_PRESSED(0, (Hash)NativeInputs::INPUT_MOVE_UP_ONLY))
-				vel.y += kBirdFlySpeed;
-			if (PAD::IS_CONTROL_PRESSED(0, (Hash)NativeInputs::INPUT_MOVE_DOWN_ONLY))
-				vel.y -= kBirdFlySpeed;
-			if (PAD::IS_CONTROL_PRESSED(0, (Hash)NativeInputs::INPUT_MOVE_LEFT_ONLY))
-				vel.x -= kBirdFlySpeed;
-			if (PAD::IS_CONTROL_PRESSED(0, (Hash)NativeInputs::INPUT_MOVE_RIGHT_ONLY))
-				vel.x += kBirdFlySpeed;
+				up -= 1.0f;
 
-			if (vel.x == 0.f && vel.y == 0.f && vel.z == 0.f)
-				return;
+			const bool sprint = PAD::IS_CONTROL_PRESSED(0, (Hash)NativeInputs::INPUT_SPRINT);
+			const float speed = sprint ? 24.0f : 12.0f;
 
-			const auto location = ped.GetPosition();
-			const auto offset   = ENTITY::GET_OFFSET_FROM_ENTITY_IN_WORLD_COORDS(
-			    pedHandle,
-			    vel.x,
-			    vel.y,
-			    vel.z);
-
-			ped.SetVelocity({});
-			ped.SetPosition({offset.x, offset.y, offset.z});
-
-			const auto rot = CAM::GET_GAMEPLAY_CAM_ROT(2);
-			ped.SetRotation({0.0f, rot.y, rot.z});
-		}
-
-		void RestoreGravityIfNeeded(Ped ped)
-		{
-			const int pedHandle = ped.GetHandle();
-			if (PED::_GET_IS_BIRD(pedHandle))
-				return;
-
-			PED::SET_PED_GRAVITY(pedHandle, true);
-			ENTITY::SET_ENTITY_HAS_GRAVITY(pedHandle, true);
-		}
-
-		void TickAnimalAbilities()
-		{
-			auto ped = Self::GetPed();
-			if (!ped || !ped.IsValid() || !ped.IsAnimal())
+			if (std::abs(moveX) < 0.05f && std::abs(moveY) < 0.05f && up == 0.0f)
 			{
-				if (ped && ped.IsValid())
-					RestoreGravityIfNeeded(ped);
+				// no input: hover in place and gently bleed off momentum
+				const auto v = ped.GetVelocity();
+				ped.SetVelocity({v.x * 0.85f, v.y * 0.85f, 0.0f});
 				return;
 			}
 
-			ConfigureCombatAnimal(ped.GetHandle());
-			TickBirdFlight(ped);
-			TickAnimalAttack(ped);
-		}
+			const auto camRot = CAM::GET_GAMEPLAY_CAM_ROT(2);
+			const float yaw    = camRot.z * kDegToRad;
+			const float pitch  = camRot.x * kDegToRad;
+			const float cosP   = std::cos(pitch);
 
-		void StartAnimalAbilitiesScript()
-		{
-			if (g_ScriptRunning)
-				return;
+			const rage::fvector3 forward{-std::sin(yaw) * cosP, std::cos(yaw) * cosP, std::sin(pitch)};
+			const rage::fvector3 right{std::cos(yaw), std::sin(yaw), 0.0f};
 
-			g_ScriptRunning = true;
-			ScriptMgr::AddScript(std::make_unique<Script>([] {
-				while (true)
-				{
-					TickAnimalAbilities();
-					ScriptMgr::Yield(0ms);
-				}
-			}));
+			rage::fvector3 dir{
+			    forward.x * moveY + right.x * moveX,
+			    forward.y * moveY + right.y * moveX,
+			    forward.z * moveY + up,
+			};
+
+			const float len = std::sqrt(dir.x * dir.x + dir.y * dir.y + dir.z * dir.z);
+			if (len > 0.001f)
+			{
+				dir.x /= len;
+				dir.y /= len;
+				dir.z /= len;
+			}
+
+			ped.SetVelocity({dir.x * speed, dir.y * speed, dir.z * speed});
+			ENTITY::SET_ENTITY_HEADING(handle, camRot.z);
 		}
 	}
 
-	void AnimalPlayerAbilities::Init()
+	void TickAnimalAbilities()
 	{
-		StartAnimalAbilitiesScript();
-	}
-
-	void AnimalPlayerAbilities::ConfigurePlayerAsAnimal(Ped ped)
-	{
-		if (!ped || !ped.IsValid() || !ped.IsAnimal())
+		auto ped = Self::GetPed();
+		if (!ped || !ped.IsValid())
 			return;
 
-		const int pedHandle = ped.GetHandle();
-		ped.ForceControl();
+		const int handle = ped.GetHandle();
 
-		FLOCK::_SET_ANIMAL_IS_WILD(pedHandle, false);
-		DisableAnimalFlee(pedHandle);
-		ConfigureCombatAnimal(pedHandle);
-		PED::SET_PED_KEEP_TASK(pedHandle, true);
-
-		if (PED::_GET_IS_BIRD(pedHandle))
+		if (!ped.IsAnimal())
 		{
-			PED::SET_PED_GRAVITY(pedHandle, false);
-			ENTITY::SET_ENTITY_HAS_GRAVITY(pedHandle, false);
+			// We stopped being an animal (e.g. changed back to Arthur): undo the flight
+			// gravity tweak once so a human model behaves normally again.
+			if (g_ConfiguredModel != 0)
+			{
+				PED::SET_PED_GRAVITY(handle, true);
+				ENTITY::SET_ENTITY_HAS_GRAVITY(handle, true);
+				g_ConfiguredModel = 0;
+			}
+			return;
 		}
+
+		const int model = ped.GetModel();
+		if (model != g_ConfiguredModel)
+		{
+			ped.ForceControl();
+			MakeCombatReady(handle);
+			DisableAnimalFlee(handle);
+			PED::SET_PED_KEEP_TASK(handle, true);
+			g_ConfiguredModel = model;
+		}
+
+		// Don't fight the menu for control while it is open.
+		if (GUI::IsOpen())
+			return;
+
+		if (IsBird(handle))
+			TickBirdFlight(ped);
+
+		TickAttack(handle, Self::GetPlayer().GetId(), ped.GetPosition());
 	}
 }

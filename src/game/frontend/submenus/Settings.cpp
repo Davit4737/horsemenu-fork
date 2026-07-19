@@ -117,9 +117,13 @@ namespace YimMenu::Submenus
 		gui->AddItem(context);
 		gui->AddItem(misc);
 
+		auto selfDefenseGroup = std::make_shared<Group>("Self Defense");
+		selfDefenseGroup->AddItem(std::make_shared<BoolCommandItem>("antigrief"_J));
+
 		protections->AddItem(syncGroup);
 		protections->AddItem(networkEventGroup);
 		protections->AddItem(scriptEventGroup);
+		protections->AddItem(selfDefenseGroup);
 		AddCategory(std::move(hotkeys));
 		AddCategory(std::move(gui));
 		AddCategory(std::move(protections));

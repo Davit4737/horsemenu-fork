@@ -12,6 +12,7 @@
 #include "game/rdr/Enums.hpp"
 #include "game/rdr/Natives.hpp"
 #include "game/backend/Self.hpp"
+#include "game/features/self/AnimalPlayerAbilities.hpp"
 
 namespace YimMenu
 {
@@ -71,6 +72,7 @@ namespace YimMenu
 				Commands::RunLoopedCommands();
 				g_HotkeySystem.FeatureCommandsHotkeyLoop();
 				Self::Update();
+				Features::TickAnimalAbilities();
 			}
 			ScriptMgr::Yield();
 		}

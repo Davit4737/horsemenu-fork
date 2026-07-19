@@ -2,6 +2,7 @@
 
 #include "World/PedSpawner.hpp"
 #include "World/ObjectSpawner.hpp"
+#include "World/MapEditor.hpp"
 #include "World/Shows.hpp"
 #include "World/Train.hpp"
 #include "World/VehicleSpawner.hpp"
@@ -130,10 +131,16 @@ namespace YimMenu::Submenus
 			RenderTrainsMenu();
 		}));
 
+		auto mapEditorGroup = std::make_shared<Group>("Map Editor");
+		mapEditorGroup->AddItem(std::make_shared<ImGuiItem>([] {
+			RenderMapEditorMenu();
+		}));
+
 		spawners->AddItem(pedSpawnerGroup);
 		spawners->AddItem(vehicleSpawnerGroup);
 		spawners->AddItem(objectSpawnerGroup);
 		spawners->AddItem(trainSpawnerGroup);
+		spawners->AddItem(mapEditorGroup);
 
 		auto poolCounter = std::make_shared<ImGuiItem>([] {
 			if (GetPedPool())
@@ -189,6 +196,8 @@ namespace YimMenu::Submenus
 		auto eventsGroup = std::make_shared<Group>("Sky Events");
 		eventsGroup->AddItem(std::make_shared<BoolCommandItem>("meteorshower"_J));
 		eventsGroup->AddItem(std::make_shared<BoolCommandItem>("ufoskyevent"_J));
+		eventsGroup->AddItem(std::make_shared<BoolCommandItem>("lightningstorm"_J));
+		eventsGroup->AddItem(std::make_shared<BoolCommandItem>("rainoffire"_J));
 		events->AddItem(eventsGroup);
 
 		AddCategory(std::move(main));
